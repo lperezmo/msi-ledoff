@@ -12,6 +12,20 @@ revisions are untested. The lighting register meanings come from reverse
 engineering (nagisa/msi-rgb, ixjf/MSIRGB); the GPIO register layout comes from
 the public NCT6796D datasheet, since the NCT6795D has none.
 
+## Disclaimer
+
+Use this at your own discretion and at your own risk. The module writes
+hardware registers of the Super I/O chip from kernel space, based on reverse
+engineering and on a datasheet for a related chip, not on documentation from
+MSI. It has been confirmed on a single board (rev 2.0). It is not affiliated
+with or endorsed by MSI or Nuvoton.
+
+It comes with no warranty of any kind: see the [LICENSE](LICENSE) (GPL-2.0),
+sections 11 and 12. If it resets your machine, upsets a fan or damages
+hardware, that is on you. Read "If the machine misbehaves or will not boot"
+and "Test pulse" before using it, and do not try to adapt it to another board
+without checking every register against that board first.
+
 ## What it does
 
 On load:
@@ -245,3 +259,8 @@ supply off at the back for 30 seconds to clear it.
 make            # or: make KVER=<kernel version>
 make clean
 ```
+
+## License
+
+GPL-2.0, see [LICENSE](LICENSE). The module follows the Super I/O access
+conventions of the kernel's `nct6775` driver.
