@@ -30,8 +30,21 @@
  *                                      MSIRGB do; bits 4..0 are preserved
  *                                      (nct6775 reads them for pin muxing).
  *
+ *   LDN 0x12, CR FF  bits 4..2       : B/G/R invert (F = 0 %, 0 = 100 %).
+ *   LDN 0x12, CR F0..FB              : colour frames, 4 each for R, G, B.
+ *                                      This board's firmware leaves the
+ *                                      invert bits set and the colours 00,
+ *                                      i.e. every channel at 100 %.  With
+ *                                      0.2.0 (E4 off + E0 enables) a light
+ *                                      turned from red to white instead of
+ *                                      going dark, so E4 = 001 does not blank
+ *                                      this board.  The optional invert= and
+ *                                      colour= parameters set the intensity
+ *                                      to 0 % instead; both are restored on
+ *                                      unload.
+ *
  * Nothing else is written.  In particular CR 2C, EB, ED (pin muxing read by
- * nct6775), the colour registers F0..FB, FD and FE are never written.
+ * nct6775), FD and FE are never written.
  *
  * msi-rgb also forces global CR 2C bit 4 on ("without this pulsing does not
  * work").  This module does not; it only logs it.
@@ -53,6 +66,7 @@
 #include <linux/mutex.h>
 #include <linux/notifier.h>
 #include <linux/printk.h>
+#include <linux/string.h>
 #include <linux/suspend.h>
 #include <linux/types.h>
 
@@ -70,7 +84,7 @@
 #define SIO_LD_RGB		0x12
 #define RGB_REG_ENABLE		0xe0	/* bits 7..5 = R/G/B channel enables */
 #define RGB_REG_CFG1		0xe4	/* bit 3 breathing, bits 2..0 blink/off */
-#define RGB_REG_COLOUR		0xf0	/* f0..fb, read-only here */
+#define RGB_REG_COLOUR		0xf0	/* f0..fb, written only with colour= */
 #define RGB_COLOUR_LEN		12
 #define RGB_REG_FD		0xfd	/* read-only here */
 #define RGB_REG_FE		0xfe	/* read-only here */
@@ -78,7 +92,8 @@
 
 #define CFG1_MODE_MASK		0x0f	/* the only E4 bits this module owns */
 #define CFG1_MODE_OFF		0x01	/* blink field 001 = all lighting off */
-#define CFG3_HEADER_EN		0x02	/* the only FF bit this module owns */
+#define CFG3_HEADER_EN		0x02	/* FF bit owned with header_off=1 */
+#define CFG3_INVERT_MASK		0x1c	/* FF bits owned with invert=0/1 */
 #define ENABLE_CHAN_MASK		0xe0	/* the only E0 bits this module owns */
 
 static bool dry_run;
@@ -95,6 +110,16 @@ static bool channel_enable = true;
 module_param(channel_enable, bool, 0444);
 MODULE_PARM_DESC(channel_enable,
 		 "Also set the R/G/B channel enable bits, CR E0 bits 7..5, which the off setting needs to take effect on this board (default: Y)");
+
+static int invert = -1;
+module_param(invert, int, 0444);
+MODULE_PARM_DESC(invert,
+		 "CR FF bits 4..2, B/G/R invert: -1 leave alone (default), 0 clear, 1 set");
+
+static int colour = -1;
+module_param(colour, int, 0444);
+MODULE_PARM_DESC(colour,
+		 "Byte to write to all twelve colour registers F0..FB: -1 leave alone (default), 0..255");
 
 static bool resume_reapply = true;
 module_param(resume_reapply, bool, 0444);
@@ -116,6 +141,8 @@ static bool ledoff_e0_saved;	/* E0 was changed by us; ledoff_e0_orig valid */
 static u8 ledoff_e0_orig;
 static bool ledoff_cfg3_saved;	/* FF was changed by us; ledoff_cfg3_orig valid */
 static u8 ledoff_cfg3_orig;
+static bool ledoff_colour_saved; /* F0..FB changed by us; _orig valid */
+static u8 ledoff_colour_orig[RGB_COLOUR_LEN];
 
 static const struct dmi_system_id ledoff_dmi_table[] = {
 	{
@@ -240,11 +267,14 @@ static int ledoff_write_verify(int ioreg, int reg, u8 old, u8 val)
  */
 static int ledoff_session(int ioreg, enum ledoff_op op)
 {
-	u8 colour[RGB_COLOUR_LEN];
-	u8 old_ld, cr2c, e0, cfg1, fd, fe, cfg3, val;
+	u8 colour_now[RGB_COLOUR_LEN];
+	u8 old_ld, cr2c, e0, cfg1, fd, fe, cfg3, val, mask3;
 	bool unchanged0 = false, unchanged1 = false, unchanged3 = false;
 	int i, err, ret = 0;
 	u16 id;
+
+	mask3 = (header_off ? CFG3_HEADER_EN : 0) |
+		(invert >= 0 ? CFG3_INVERT_MASK : 0);
 
 	mutex_lock(&ledoff_lock);
 
@@ -278,7 +308,7 @@ static int ledoff_session(int ioreg, enum ledoff_op op)
 	fe = sio_inb(ioreg, RGB_REG_FE);
 	cfg3 = sio_inb(ioreg, RGB_REG_CFG3);
 	for (i = 0; i < RGB_COLOUR_LEN; i++)
-		colour[i] = sio_inb(ioreg, RGB_REG_COLOUR + i);
+		colour_now[i] = sio_inb(ioreg, RGB_REG_COLOUR + i);
 
 	switch (op) {
 	case LEDOFF_OP_DUMP:
@@ -315,16 +345,38 @@ static int ledoff_session(int ioreg, enum ledoff_op op)
 			}
 		}
 
-		if (!header_off)
-			break;
-		val = cfg3 & ~CFG3_HEADER_EN;
+		if (colour >= 0) {
+			for (i = 0; i < RGB_COLOUR_LEN && !ret; i++) {
+				if (colour_now[i] == (u8)colour)
+					continue;
+				if (!ledoff_colour_saved) {
+					memcpy(ledoff_colour_orig, colour_now,
+					       RGB_COLOUR_LEN);
+					ledoff_colour_saved = true;
+				}
+				ret = ledoff_write_verify(ioreg,
+							  RGB_REG_COLOUR + i,
+							  colour_now[i],
+							  (u8)colour);
+			}
+			if (ret)
+				break;
+		}
+
+		val = cfg3;
+		if (header_off)
+			val &= ~CFG3_HEADER_EN;
+		if (invert == 0)
+			val &= ~CFG3_INVERT_MASK;
+		else if (invert > 0)
+			val |= CFG3_INVERT_MASK;
 		if (val != cfg3) {
 			if (!ledoff_cfg3_saved) {
 				ledoff_cfg3_orig = cfg3;
 				ledoff_cfg3_saved = true;
 			}
 			ret = ledoff_write_verify(ioreg, RGB_REG_CFG3, cfg3, val);
-		} else {
+		} else if (mask3) {
 			unchanged3 = true;
 		}
 		break;
@@ -350,9 +402,21 @@ static int ledoff_session(int ioreg, enum ledoff_op op)
 			}
 			ledoff_cfg1_saved = false;
 		}
+		if (ledoff_colour_saved) {
+			for (i = 0; i < RGB_COLOUR_LEN; i++) {
+				if (colour_now[i] == ledoff_colour_orig[i])
+					continue;
+				err = ledoff_write_verify(ioreg,
+							  RGB_REG_COLOUR + i,
+							  colour_now[i],
+							  ledoff_colour_orig[i]);
+				if (!ret)
+					ret = err;
+			}
+			ledoff_colour_saved = false;
+		}
 		if (ledoff_cfg3_saved) {
-			val = (cfg3 & ~CFG3_HEADER_EN) |
-			      (ledoff_cfg3_orig & CFG3_HEADER_EN);
+			val = (cfg3 & ~mask3) | (ledoff_cfg3_orig & mask3);
 			if (val != cfg3) {
 				err = ledoff_write_verify(ioreg, RGB_REG_CFG3,
 							  cfg3, val);
@@ -371,7 +435,7 @@ static int ledoff_session(int ioreg, enum ledoff_op op)
 	/* Logged only now, to keep the time spent in config mode short. */
 	pr_info("port 0x%02x: chip ID 0x%04x, LDN was 0x%02x, global CR2C=0x%02x; LDN 0x12 as found: E0=0x%02x E4=0x%02x FD=0x%02x FE=0x%02x FF=0x%02x F0..FB=%*ph\n",
 		ioreg, id, old_ld, cr2c, e0, cfg1, fd, fe, cfg3,
-		RGB_COLOUR_LEN, colour);
+		RGB_COLOUR_LEN, colour_now);
 	if (op == LEDOFF_OP_DUMP)
 		pr_info("dry run: lighting is currently %s (E4 bits 2..0 = %u), RGB header bit is %s, channel enables E0[7:5] = %u%u%u, CR2C bit 4 = %u; nothing changed\n",
 			(cfg1 & 0x07) == CFG1_MODE_OFF ? "OFF" : "ON",
@@ -384,7 +448,7 @@ static int ledoff_session(int ioreg, enum ledoff_op op)
 	if (unchanged1)
 		pr_info("CR E4 already says lighting off, not written\n");
 	if (unchanged3)
-		pr_info("CR FF RGB header bit already off, not written\n");
+		pr_info("CR FF already as requested, not written\n");
 	return ret;
 
 out_exit:
@@ -423,6 +487,10 @@ static int __init ledoff_init(void)
 	enum ledoff_op op = dry_run ? LEDOFF_OP_DUMP : LEDOFF_OP_APPLY;
 	int i, ret = -ENODEV;
 
+	if (colour > 255 || colour < -1 || invert > 1 || invert < -1) {
+		pr_err("invalid colour= or invert= value\n");
+		return -EINVAL;
+	}
 	if (!dmi_check_system(ledoff_dmi_table)) {
 		pr_err("unsupported board (need MSI X470 GAMING PLUS (MS-7B79)), doing nothing\n");
 		return -ENODEV;
@@ -467,7 +535,8 @@ static int __init ledoff_init(void)
 
 err_restore:
 	/* Undo a partial apply (no-op if nothing was changed). */
-	if (ledoff_e0_saved || ledoff_cfg1_saved || ledoff_cfg3_saved)
+	if (ledoff_e0_saved || ledoff_cfg1_saved || ledoff_cfg3_saved ||
+	    ledoff_colour_saved)
 		ledoff_session(ledoff_port, LEDOFF_OP_RESTORE);
 	return ret;
 }
@@ -480,7 +549,8 @@ static void __exit ledoff_exit(void)
 	if (resume_reapply)
 		unregister_pm_notifier(&ledoff_pm_nb);
 
-	if (!ledoff_e0_saved && !ledoff_cfg1_saved && !ledoff_cfg3_saved) {
+	if (!ledoff_e0_saved && !ledoff_cfg1_saved && !ledoff_cfg3_saved &&
+	    !ledoff_colour_saved) {
 		pr_info("nothing was changed, nothing to restore\n");
 		return;
 	}
@@ -496,5 +566,5 @@ module_exit(ledoff_exit);
 
 MODULE_AUTHOR("msi_ledoff contributors");
 MODULE_DESCRIPTION("Turn off the onboard LEDs of the MSI X470 GAMING PLUS (MS-7B79) via the NCT679x Super I/O");
-MODULE_VERSION("0.2.0");
+MODULE_VERSION("0.3.0");
 MODULE_LICENSE("GPL");
