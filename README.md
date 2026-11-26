@@ -32,7 +32,13 @@ On load:
 6. Puts CR `07` back, leaves config mode (`0xaa`, then the `nct6775` idle
    sequence), releases the ports, and only then logs what it read.
 
-Nothing else is ever written: not CR `2C`, `E0`, `EB`, `ED`, the colour
+   Since 0.2.0 (unless `channel_enable=0`): after `E4`, also writes CR
+   `E0 = E0 | 0xE0` (the R/G/B channel enables; low five bits preserved), with
+   the same checks. On this board the firmware leaves those bits `000`, and
+   with them clear the `E4` write alone had no visible effect (tested with
+   0.1.0). `rmmod` restores them.
+
+Nothing else is ever written: not CR `2C`, `EB`, `ED`, the colour
 registers, `FD` or `FE`.
 
 On unload (`rmmod`) the same session is run and the saved low four bits of
@@ -60,7 +66,7 @@ by name, by `modprobe` or by the one file `enable-at-boot.sh` writes. After a
 sudo ./install.sh
 ```
 
-Copies the sources to `/usr/src/msi-ledoff-0.1.0`, runs `dkms add/build/install`
+Copies the sources to `/usr/src/msi-ledoff-<version>` (removing any older installed version first), runs `dkms add/build/install`
 for the running kernel and then for every other installed kernel that has
 headers, checks the module is signed (and whether the key is the DKMS MOK
 key), loads it once with `dry_run=1`, prints the kernel log and unloads it.
@@ -69,10 +75,9 @@ been enabled earlier, it turns boot loading off again.
 
 Look at the log: the chip ID should be `0xd35x` or `0xd45x` and the register
 values should not all be `0xff`. **Save that log**, in particular `E0`, `E4`,
-`FF` and `CR2C`. The other tools switch the LED function on (`CR2C` bit 4,
-`E0` bits 7..5) before writing `E4`; this module does not touch those shared
-bits, so if the firmware left them in another state the real load may have no
-visible effect, and those values are what is needed to work out why.
+`FF` and `CR2C`. The other tools also set `CR2C` bit 4 before writing `E4`; this
+module does not, so if the real load has no visible effect those values are
+what is needed to work out why.
 
 Then try it for real:
 

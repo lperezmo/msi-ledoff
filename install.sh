@@ -30,10 +30,15 @@ fi
 # The module has no modalias, so installing it does not make it load at boot.
 # The only boot path is $BOOTCONF, written by enable-at-boot.sh.
 
+echo "==> Removing any previously installed version of $PKG"
+dkms status "$PKG" | sed -n "s|^$PKG/\([0-9][0-9A-Za-z.]*\)[,:].*|\1|p" | sort -u | while read -r OLD; do
+	[ -n "$OLD" ] || continue
+	echo "    $PKG/$OLD"
+	dkms remove "$PKG/$OLD" --all </dev/null
+	rm -rf "/usr/src/$PKG-$OLD"
+done
+
 echo "==> Copying sources to $SRC"
-if [ -n "$(dkms status "$PKG/$VER")" ]; then
-	dkms remove "$PKG/$VER" --all
-fi
 rm -rf "$SRC"
 install -d -m 0755 "$SRC"
 install -m 0644 "$HERE/msi_ledoff.c" "$HERE/Makefile" "$HERE/dkms.conf" "$SRC/"
