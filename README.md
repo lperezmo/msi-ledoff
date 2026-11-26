@@ -38,8 +38,18 @@ On load:
    with them clear the `E4` write alone had no visible effect (tested with
    0.1.0). `rmmod` restores them.
 
-Nothing else is ever written: not CR `2C`, `EB`, `ED`, the colour
-registers, `FD` or `FE`.
+   Since 0.4.0 (unless `invert=-1`): also clears CR `FF` bits 4..2 (B/G/R
+   invert). The firmware leaves them set with all colour registers `00`,
+   which means 100 % on every channel; cleared, `00` means dark. **This is the
+   write that actually turns the lighting off on the tested board** (rev 2.0,
+   NCT6795D `0xd352`): `E4` alone did nothing, `E4`+`E0` turned a light from
+   red to white, adding the invert clear turned it off. `rmmod` restores it.
+
+   A small red LED on the tested board stays lit throughout; it does not
+   react to any of these registers and is presumably not driven by this chip.
+
+Nothing else is written by default: not CR `2C`, `EB`, `ED`, `FD` or `FE`.
+The colour registers are written only with the optional `colour=` parameter.
 
 On unload (`rmmod`) the same session is run and the saved low four bits of
 `E4` (and bit 1 of `FF`, if it was changed) are put back.

@@ -38,10 +38,12 @@
  *                                      0.2.0 (E4 off + E0 enables) a light
  *                                      turned from red to white instead of
  *                                      going dark, so E4 = 001 does not blank
- *                                      this board.  The optional invert= and
- *                                      colour= parameters set the intensity
- *                                      to 0 % instead; both are restored on
- *                                      unload.
+ *                                      this board.  Clearing the invert bits
+ *                                      (invert=0, the default since 0.4.0)
+ *                                      makes colour 00 mean 0 % and was
+ *                                      confirmed on hardware to turn the
+ *                                      lighting off.  colour= is an optional
+ *                                      extra.  Both are restored on unload.
  *
  * Nothing else is written.  In particular CR 2C, EB, ED (pin muxing read by
  * nct6775), FD and FE are never written.
@@ -111,10 +113,10 @@ module_param(channel_enable, bool, 0444);
 MODULE_PARM_DESC(channel_enable,
 		 "Also set the R/G/B channel enable bits, CR E0 bits 7..5, which the off setting needs to take effect on this board (default: Y)");
 
-static int invert = -1;
+static int invert;
 module_param(invert, int, 0444);
 MODULE_PARM_DESC(invert,
-		 "CR FF bits 4..2, B/G/R invert: -1 leave alone (default), 0 clear, 1 set");
+		 "CR FF bits 4..2, B/G/R invert: 0 clear so colour 00 means dark (default), 1 set, -1 leave alone");
 
 static int colour = -1;
 module_param(colour, int, 0444);
@@ -566,5 +568,5 @@ module_exit(ledoff_exit);
 
 MODULE_AUTHOR("msi_ledoff contributors");
 MODULE_DESCRIPTION("Turn off the onboard LEDs of the MSI X470 GAMING PLUS (MS-7B79) via the NCT679x Super I/O");
-MODULE_VERSION("0.3.0");
+MODULE_VERSION("0.4.0");
 MODULE_LICENSE("GPL");
